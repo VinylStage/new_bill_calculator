@@ -2,10 +2,10 @@
 
 # --- 경로 설정 ---
 # 영수증 이미지가 저장된 디렉토리
-IMAGE_DIR = "/Users/vinyl/Downloads/receipt/receipt_images"
+IMAGE_DIR = "./receipt_images"
 
 # 최종 결과 CSV 파일이 저장될 디렉토리
-OUTPUT_DIR = "/Users/vinyl/Downloads/receipt/output"
+OUTPUT_DIR = "./output"
 
 # 저장될 최종 CSV 파일의 이름
 FINAL_CSV_NAME = "receipt_summary.csv"
