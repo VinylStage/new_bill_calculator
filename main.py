@@ -4,10 +4,12 @@ import sys
 import logging
 from datetime import datetime
 import pandas as pd
+import shutil
 from src.receipt_parser import (
     extract_text_from_image,
     classify_receipt,
     find_date,
+    find_time,
     find_amount
 )
 from src.bill_calculator import solve_knapsack
@@ -59,6 +61,51 @@ def setup_logging():
     # sys.stderr = StreamToLogger(logging.getLogger('STDERR'), logging.ERROR)
 
 
+def rename_receipt_files(df):
+    """Renames receipt files based on their sorted order (1, 2, 3...)."""
+    if not config.RENAME_FILES:
+        logging.info("  - 파일 이름 변경 기능이 비활성화되어 있습니다.")
+        return df
+
+    # Backup original files if enabled
+    if config.BACKUP_ORIGINAL:
+        os.makedirs(config.BACKUP_DIR, exist_ok=True)
+        logging.info(f"  - 원본 파일을 {config.BACKUP_DIR}에 백업 중...")
+        for _, row in df.iterrows():
+            original_path = os.path.join(config.IMAGE_DIR, row['Filename'])
+            backup_path = os.path.join(config.BACKUP_DIR, row['Filename'])
+            if os.path.exists(original_path):
+                shutil.copy2(original_path, backup_path)
+        logging.info("  - 백업 완료")
+
+    # Step 1: Rename to temporary names to avoid conflicts
+    temp_mappings = []
+    for idx, row in df.iterrows():
+        original_filename = row['Filename']
+        original_path = os.path.join(config.IMAGE_DIR, original_filename)
+        _, ext = os.path.splitext(original_filename)
+        temp_name = f"_temp_{row['No.']}{ext}"
+        temp_path = os.path.join(config.IMAGE_DIR, temp_name)
+        if os.path.exists(original_path):
+            os.rename(original_path, temp_path)
+            temp_mappings.append((temp_path, row['No.'], ext, original_filename))
+
+    # Step 2: Rename from temporary names to final names
+    new_filenames = []
+    for temp_path, no, ext, original_filename in temp_mappings:
+        final_name = f"{no}{ext}"
+        final_path = os.path.join(config.IMAGE_DIR, final_name)
+        os.rename(temp_path, final_path)
+        new_filenames.append(final_name)
+        logging.info(f"  - 파일 이름 변경: {original_filename} → {final_name}")
+
+    # Update the Filename column in DataFrame
+    df['Filename'] = new_filenames
+    logging.info("  - 파일 이름 변경 완료")
+
+    return df
+
+
 def validate_amounts(df):
     """Validates that all amounts are within a reasonable range."""
     min_amount = 1000
@@ -107,18 +154,27 @@ def process_all_receipts():
 
         receipt_type = classify_receipt(text)
         date = find_date(text)
+        time = find_time(text)
         amount = find_amount(text, receipt_type)
-        all_receipt_data.append([filename, date, amount, receipt_type])
+        all_receipt_data.append([filename, date, time, amount, receipt_type])
 
-    df = pd.DataFrame(all_receipt_data, columns=['Filename', 'Date', 'Amount', 'Type'])
+    df = pd.DataFrame(all_receipt_data, columns=['Filename', 'Date', 'Time', 'Amount', 'Type'])
     df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0).astype(int)
 
     if not validate_amounts(df):
         sys.exit(1)
 
     logging.info("--- 2. 데이터 정렬 및 번호 매기기 ---")
-    df.sort_values(by='Date', inplace=True)
+    # Create DateTime column for proper sorting
+    df['DateTime'] = df['Date'] + ' ' + df['Time']
+    df.sort_values(by='DateTime', inplace=True)
+    df.reset_index(drop=True, inplace=True)
     df.insert(0, 'No.', range(1, 1 + len(df)))
+    # Drop the temporary DateTime column
+    df.drop(columns=['DateTime'], inplace=True)
+
+    logging.info("--- 2.5. 파일 이름 변경 ---")
+    df = rename_receipt_files(df)
 
     logging.info("--- 3. 최적 합계 계산 (Knapsack) ---")
     calc_df = df[['No.', 'Amount']].copy()

@@ -273,3 +273,4 @@ output/
 receipt_images/*.PNG
 receipt_images/*.JPG
 receipt_images/*.JEPG
+receipt_images_backup/

@@ -74,6 +74,71 @@ def find_date(text):
         return f"20{year}-{month.zfill(2)}-{day.zfill(2)}"
     return "Not found"
 
+def find_time(text):
+    """Finds a time in HH:MM:SS format from the receipt text."""
+    # Priority 1: Look for time near keywords like 승인시간, 결제시간, 거래시간
+    time_keywords = ['승인시간', '결제시간', '거래시간', '시간', '결제일시', '승인일시']
+    for keyword in time_keywords:
+        # Find keyword and look for time pattern nearby
+        keyword_pattern = rf'{keyword}[:\s]*(\d{{1,2}})[:\s시](\d{{2}})[:\s분]?(\d{{2}})?초?'
+        match = re.search(keyword_pattern, text)
+        if match:
+            hour, minute, second = match.groups()
+            second = second if second else "00"
+            time_str = f"{hour.zfill(2)}:{minute.zfill(2)}:{second.zfill(2)}"
+            logger.debug(f"Found time '{time_str}' using keyword '{keyword}'")
+            return time_str
+
+    # Priority 2: Look for 오전/오후 (AM/PM) format
+    ampm_pattern = r'(오전|오후)\s*(\d{1,2})[:\s시](\d{2})[:\s분]?(\d{2})?초?'
+    match = re.search(ampm_pattern, text)
+    if match:
+        ampm, hour, minute, second = match.groups()
+        hour = int(hour)
+        if ampm == '오후' and hour != 12:
+            hour += 12
+        elif ampm == '오전' and hour == 12:
+            hour = 0
+        second = second if second else "00"
+        time_str = f"{str(hour).zfill(2)}:{minute.zfill(2)}:{second.zfill(2)}"
+        logger.debug(f"Found time '{time_str}' using AM/PM pattern")
+        return time_str
+
+    # Priority 3: Look for standard time patterns (HH:MM:SS or HH:MM)
+    # First try HH:MM:SS
+    time_pattern = r'(\d{1,2}):(\d{2}):(\d{2})'
+    match = re.search(time_pattern, text)
+    if match:
+        hour, minute, second = match.groups()
+        if 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59 and 0 <= int(second) <= 59:
+            time_str = f"{hour.zfill(2)}:{minute.zfill(2)}:{second.zfill(2)}"
+            logger.debug(f"Found time '{time_str}' using HH:MM:SS pattern")
+            return time_str
+
+    # Try HH:MM pattern
+    time_pattern = r'(\d{1,2}):(\d{2})(?!\d|:)'
+    match = re.search(time_pattern, text)
+    if match:
+        hour, minute = match.groups()
+        if 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59:
+            time_str = f"{hour.zfill(2)}:{minute.zfill(2)}:00"
+            logger.debug(f"Found time '{time_str}' using HH:MM pattern")
+            return time_str
+
+    # Priority 4: Look for Korean time format (XX시 XX분)
+    korean_time_pattern = r'(\d{1,2})시\s*(\d{2})분(?:\s*(\d{2})초)?'
+    match = re.search(korean_time_pattern, text)
+    if match:
+        hour, minute, second = match.groups()
+        second = second if second else "00"
+        if 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59:
+            time_str = f"{hour.zfill(2)}:{minute.zfill(2)}:{second.zfill(2)}"
+            logger.debug(f"Found time '{time_str}' using Korean time pattern")
+            return time_str
+
+    logger.debug("Time not found, returning default 00:00:00")
+    return "00:00:00"
+
 def _extract_amount_with_won(line):
     """Extracts an amount from a line that follows the 'X,XXX 원' pattern."""
     match = re.search(r'([\d,]+)\s*원', line)

@@ -22,3 +22,14 @@ LOG_DIR = "logs"
 
 # 어플리케이션의 로깅 레벨 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 LOG_LEVEL = "DEBUG"
+
+
+# --- 파일 이름 변경 설정 ---
+# 파일 이름 변경 기능 활성화 여부
+RENAME_FILES = True
+
+# 원본 파일 백업 여부
+BACKUP_ORIGINAL = True
+
+# 원본 파일 백업 디렉토리
+BACKUP_DIR = "./receipt_images_backup"
