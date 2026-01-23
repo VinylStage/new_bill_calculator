@@ -316,6 +316,9 @@ def process_all_receipts(args):
     logging.info("--- 4. 최종 결과 생성 ---")
     df['제외유무'] = df['No.'].apply(lambda x: 'Y' if x in excluded_ids else 'N')
 
+    # Convert date format from YYYY-MM-DD to MM/DD/YYYY for report
+    df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%m/%d/%Y')
+
     output_path = os.path.join(output_dir, config.FINAL_CSV_NAME)
     if not dry_run:
         df.to_csv(output_path, index=False, encoding='utf-8-sig')
