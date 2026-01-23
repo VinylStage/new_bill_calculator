@@ -290,31 +290,53 @@ def process_all_receipts(args):
     if not validate_amounts(df):
         sys.exit(1)
 
-    logging.info("--- 2. 데이터 정렬 및 번호 매기기 ---")
+    logging.info("--- 2. 데이터 정렬 ---")
     # Create DateTime column for proper sorting
     df['DateTime'] = df['Date'] + ' ' + df['Time']
     df.sort_values(by='DateTime', inplace=True)
     df.reset_index(drop=True, inplace=True)
-    df.insert(0, 'No.', range(1, 1 + len(df)))
-    # Drop the temporary DateTime column
-    df.drop(columns=['DateTime'], inplace=True)
-
-    logging.info("--- 2.5. 파일 이름 변경 ---")
-    df = rename_receipt_files(df, input_dir, do_rename, do_backup, dry_run)
+    # Temporary index for knapsack calculation
+    df.insert(0, 'TempIdx', range(1, 1 + len(df)))
 
     logging.info("--- 3. 최적 합계 계산 (Knapsack) ---")
-    calc_df = df[['No.', 'Amount']].copy()
-    calc_df.rename(columns={'No.': 'Item'}, inplace=True)
+    calc_df = df[['TempIdx', 'Amount']].copy()
+    calc_df.rename(columns={'TempIdx': 'Item'}, inplace=True)
 
     best_sum, included_ids = solve_knapsack(calc_df, bill_limit)
-    all_ids = set(df['No.'].tolist())
+    all_ids = set(df['TempIdx'].tolist())
     excluded_ids = all_ids - set(included_ids)
 
     logging.info(f"  - 최적 합계: {best_sum:,}원")
-    logging.info(f"  - 제외될 항목 No.: {sorted(list(excluded_ids))}")
+    logging.info(f"  - 제외될 항목: {len(excluded_ids)}개")
 
-    logging.info("--- 4. 최종 결과 생성 ---")
-    df['제외유무'] = df['No.'].apply(lambda x: 'Y' if x in excluded_ids else 'N')
+    # Mark excluded items
+    df['제외유무'] = df['TempIdx'].apply(lambda x: 'Y' if x in excluded_ids else 'N')
+
+    # Split into included and excluded DataFrames
+    df_included = df[df['제외유무'] == 'N'].copy()
+    df_excluded = df[df['제외유무'] == 'Y'].copy()
+
+    logging.info("--- 4. 포함 항목 번호 매기기 및 파일 이름 변경 ---")
+    # Number only included items (1, 2, 3...)
+    df_included['No.'] = range(1, 1 + len(df_included))
+
+    # Rename only included files
+    df_included = rename_receipt_files(df_included, input_dir, do_rename, do_backup, dry_run)
+
+    # Excluded items: no number, keep original filename
+    df_excluded['No.'] = ''
+
+    # Combine: included first, then excluded at bottom
+    df = pd.concat([df_included, df_excluded], ignore_index=True)
+
+    # Drop temporary columns
+    df.drop(columns=['TempIdx', 'DateTime'], inplace=True)
+
+    # Reorder columns: No. first
+    cols = ['No.', 'Filename', 'Date', 'Time', 'Amount', 'Type', '제외유무']
+    df = df[cols]
+
+    logging.info("--- 5. 최종 결과 생성 ---")
 
     # Convert date format to Korean style (1월 6일) for report
     df['Date'] = pd.to_datetime(df['Date']).apply(lambda x: f"{x.month}월 {x.day}일")
