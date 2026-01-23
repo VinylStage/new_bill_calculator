@@ -178,7 +178,7 @@ def find_amount(text, receipt_type):
                 logger.debug(f"Scanning line above 'deep on': '{line.strip()}'")
                 amount = extract_amount_from_line(line)
                 if amount and int(amount) > 100:
-                    logger.info(f"Found amount {amount} using '신한카드' logic.")
+                    logger.debug(f"Found amount {amount} using '신한카드' logic.")
                     return amount
 
     elif receipt_type in ['하나카드', '삼성카드']:
@@ -191,7 +191,7 @@ def find_amount(text, receipt_type):
         
         if potential_amounts:
             max_amount = max(potential_amounts)
-            logger.info(f"Found amounts {potential_amounts}. Returning max: {max_amount}.")
+            logger.debug(f"Found amounts {potential_amounts}. Returning max: {max_amount}.")
             return str(max_amount)
 
     logger.debug("Using general keyword logic.")
@@ -202,7 +202,7 @@ def find_amount(text, receipt_type):
                 logger.debug(f"Found keyword '{keyword}' in line: '{line.strip()}'")
                 amount = extract_amount_from_line(line)
                 if amount:
-                    logger.info(f"Found amount {amount} using keyword '{keyword}'.")
+                    logger.debug(f"Found amount {amount} using keyword '{keyword}'.")
                     return amount
     
     logger.warning("Could not find amount in receipt.")
