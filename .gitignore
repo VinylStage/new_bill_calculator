@@ -271,6 +271,8 @@ $RECYCLE.BIN/
 # Project-specific additions
 output/
 receipt_images/*.PNG
+receipt_images/*.png
 receipt_images/*.JPG
+receipt_images/*.jpg
 receipt_images/*.JEPG
 receipt_images_backup/
