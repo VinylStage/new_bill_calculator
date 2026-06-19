@@ -54,11 +54,13 @@ def classify_receipt(text):
         receipt_type = '스타벅스'
     elif '상세 이용내역' in text and '결제확정' in text:
         receipt_type = '신한카드(앱)'
+    elif '신한카드' in text:
+        receipt_type = '신한카드(실물)'
     elif 'deep on' in text_lower:
         receipt_type = '신한카드'
     elif 'hana card' in text_lower or '하나카드' in text_lower or '5181-85' in text:
         receipt_type = '하나카드'
-    elif 'samsung card' in text_lower or '삼성카드' in text_lower:
+    elif 'samsung card' in text_lower or '삼성카드' in text_lower or '삼성' in text_lower:
         receipt_type = '삼성카드'
     
     logger.debug(f"Classified receipt as: {receipt_type}")
@@ -183,6 +185,20 @@ def find_amount(text, receipt_type):
                 if int(amount) > 100:
                     logger.debug(f"Found amount {amount} using '신한카드(앱)' logic.")
                     return amount
+
+    elif receipt_type == '신한카드(실물)':
+        logger.debug("Using '신한카드(실물)' specific logic.")
+        amounts = []
+        for line in lines:
+            match = re.search(r'(\d{1,3}(?:,\d{3})+)', line)
+            if match:
+                amount = int(match.group(1).replace(',', ''))
+                if amount > 100:
+                    amounts.append(amount)
+        if amounts:
+            max_amount = max(amounts)
+            logger.debug(f"Found amount {max_amount} using '신한카드(실물)' logic.")
+            return str(max_amount)
 
     elif receipt_type == '신한카드':
         logger.debug("Using '신한카드' specific logic.")
