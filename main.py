@@ -223,19 +223,24 @@ def validate_amounts(df):
     invalid_amounts_df = df[(df['Amount'] < min_amount) | (df['Amount'] > max_amount)]
 
     if not invalid_amounts_df.empty:
-        logging.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        logging.error("!!! 경고: 비정상적인 금액이 감지되어 작업을 중단합니다.")
-        logging.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        logging.error("\n아래 파일들의 금액을 확인하고 수동으로 수정해야 합니다.")
-        logging.error("문제가 되는 파일:")
+        logging.error("=" * 60)
+        logging.error("  영수증 인식에 실패한 파일이 있습니다.")
+        logging.error("  아래 파일을 다시 촬영하여 교체해주세요.")
+        logging.error("=" * 60)
         for _, row in invalid_amounts_df.iterrows():
-            logging.error(f"  - 파일명: {row['Filename']}, 추출된 금액: {row['Amount']}원")
-        
-        logging.error("\n[조치 방법]")
-        logging.error(f"1. `{config.LOG_DIR}` 폴더에 생성된 최신 로그 파일(*-debug.log)을 열어 OCR로 추출된 전체 텍스트를 확인하세요.")
-        logging.error("2. `src/receipt_parser.py`의 금액 추출 로직을 디버깅하거나 수정하세요.")
-        logging.error("3. 또는, 원본 이미지 파일의 해상도를 개선하거나 노이즈를 제거하세요.")
-        logging.error("4. 수정한 후, 이 스크립트를 다시 실행해주세요.")
+            amount = row['Amount']
+            if amount == 0:
+                reason = "금액을 전혀 읽을 수 없었습니다 (이미지가 너무 흐리거나 글자가 잘렸을 수 있습니다)"
+            elif amount < min_amount:
+                reason = f"금액이 너무 낮게 추출되었습니다 (추출값: {amount}원 / OCR 오인식으로 추정됩니다)"
+            else:
+                reason = f"금액이 비정상적으로 높게 추출되었습니다 (추출값: {amount:,}원 / OCR 오인식으로 추정됩니다)"
+            logging.error(f"\n  [재촬영 필요] {row['Filename']}")
+            logging.error(f"  → {reason}")
+            logging.error(f"  → 영수증 전체가 선명하게 나오도록, 정면에서 가까이 촬영해주세요.")
+        logging.error("\n" + "=" * 60)
+        logging.error("  위 파일 교체 후 다시 실행해주세요.")
+        logging.error("=" * 60)
         return False
     
     logging.info("--- 1.5. 금액 검증 완료 ---")

@@ -144,8 +144,8 @@ def find_time(text):
     return "00:00:00"
 
 def _extract_amount_with_won(line):
-    """Extracts an amount from a line that follows the 'X,XXX 원' pattern."""
-    match = re.search(r'([\d,]+)\s*원', line)
+    """Extracts a comma-formatted amount (X,XXX or X,XXX,XXX) followed by 원 suffix."""
+    match = re.search(r'(\d{1,3}(?:,\d{3})+)\s*원', line)
     if match:
         amount_str = match.group(1).replace(',', '')
         if amount_str.isdigit():
@@ -154,14 +154,38 @@ def _extract_amount_with_won(line):
     return None
 
 def extract_amount_from_line(line):
-    """Extracts only the numeric part of a potential amount, handling commas and periods."""
-    match = re.search(r'(\d{1,3}(?:[.,]\d{3})*)', line)
+    """Extracts a comma-formatted amount from a line, tolerating OCR-inserted spaces."""
+    match = re.search(r'(\d{1,3}(?:\s*[,，.]\s*\d{3})+)', line)
     if match:
-        amount_str = match.group(1).replace(',', '').replace('.', '')
+        amount_str = re.sub(r'[\s,，.]', '', match.group(1))
         if amount_str.isdigit():
             logger.debug(f"Extracted amount '{amount_str}' from line: '{line.strip()}'")
             return amount_str
     return None
+
+def _extract_amounts_universal(text):
+    """Finds all plausible receipt amounts using relaxed matching (handles OCR spaces/periods)."""
+    pattern = re.compile(r'(\d{1,3}(?:\s*[,，.]\s*\d{3})+)')
+    amounts = []
+    for match in pattern.finditer(text):
+        cleaned = re.sub(r'[\s,，.]', '', match.group(1))
+        if cleaned.isdigit():
+            amount = int(cleaned)
+            if 1000 <= amount <= 9999900:
+                amounts.append(amount)
+    return amounts
+
+def _extract_amounts_keyword_nofmt(text):
+    """Last-resort: finds 4-5 digit amounts on total-keyword lines where OCR dropped the comma."""
+    keyword_re = re.compile(r'(?:합\s*계|결제\s*금액|승인\s*금액|지불\s*금액|총\s*액)')
+    amounts = []
+    for line in text.split('\n'):
+        if keyword_re.search(line):
+            for m in re.finditer(r'\b(\d{4,5})\b', line):
+                amount = int(m.group(1))
+                if 1000 <= amount <= 99999:
+                    amounts.append(amount)
+    return amounts
 
 def find_amount(text, receipt_type):
     """Finds the total amount based on the receipt type and refined logic."""
@@ -218,16 +242,17 @@ def find_amount(text, receipt_type):
                     return amount
 
     elif receipt_type in ['하나카드', '삼성카드']:
-        logger.debug(f"Using '{receipt_type}' specific logic looking for '원' pattern.")
-        potential_amounts = []
+        logger.debug(f"Using '{receipt_type}' specific logic.")
+        won_amounts = []
         for line in lines:
             amount = _extract_amount_with_won(line)
             if amount:
-                potential_amounts.append(int(amount))
-        
-        if potential_amounts:
-            max_amount = max(potential_amounts)
-            logger.debug(f"Found amounts {potential_amounts}. Returning max: {max_amount}.")
+                won_amounts.append(int(amount))
+        universal_amounts = _extract_amounts_universal(text)
+        all_amounts = list(set(won_amounts + universal_amounts))
+        if all_amounts:
+            max_amount = max(all_amounts)
+            logger.debug(f"Found amounts (원:{won_amounts}, universal:{universal_amounts}). Returning max: {max_amount}.")
             return str(max_amount)
 
     logger.debug("Using general keyword logic.")
@@ -240,6 +265,15 @@ def find_amount(text, receipt_type):
                 if amount:
                     logger.debug(f"Found amount {amount} using keyword '{keyword}'.")
                     return amount
-    
+
+    logger.debug("Using universal amount fallback.")
+    relaxed = _extract_amounts_universal(text)
+    nofmt = _extract_amounts_keyword_nofmt(text)
+    all_amounts = list(set(relaxed + nofmt))
+    if all_amounts:
+        max_amount = max(all_amounts)
+        logger.debug(f"Universal fallback (relaxed:{relaxed}, nofmt:{nofmt}) → max: {max_amount}")
+        return str(max_amount)
+
     logger.warning("Could not find amount in receipt.")
     return "Not found"
