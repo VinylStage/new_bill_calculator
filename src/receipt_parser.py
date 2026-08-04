@@ -163,17 +163,38 @@ def extract_amount_from_line(line):
             return amount_str
     return None
 
+# Lines carrying comma-formatted numbers that are never the payment total:
+# 해피콘/카카오페이 굿딜 preloads a 500,000원 balance, and merchant addresses
+# contain building numbers like '203,204호'.
+_NON_AMOUNT_LINE_RE = re.compile(r'잔\s*액|잔\s*여|포\s*인\s*트|적\s*립|주\s*소')
+
 def _extract_amounts_universal(text):
     """Finds all plausible receipt amounts using relaxed matching (handles OCR spaces/periods)."""
     pattern = re.compile(r'(\d{1,3}(?:\s*[,，.]\s*\d{3})+)')
     amounts = []
-    for match in pattern.finditer(text):
-        cleaned = re.sub(r'[\s,，.]', '', match.group(1))
-        if cleaned.isdigit():
-            amount = int(cleaned)
-            if 1000 <= amount <= 9999900:
-                amounts.append(amount)
+    for line in text.split('\n'):
+        if _NON_AMOUNT_LINE_RE.search(line):
+            logger.debug(f"Skipping non-amount line: '{line.strip()}'")
+            continue
+        for match in pattern.finditer(line):
+            cleaned = re.sub(r'[\s,，.]', '', match.group(1))
+            if cleaned.isdigit():
+                amount = int(cleaned)
+                if 1000 <= amount <= 9999900:
+                    amounts.append(amount)
     return amounts
+
+def _pick_most_likely_amount(amounts):
+    """Returns the most frequent amount, ties broken by the largest value.
+    A receipt's real total repeats across lines while noise (coupon balances,
+    address digits) appears once, so frequency beats magnitude."""
+    if not amounts:
+        return None
+    counts = {}
+    for amount in amounts:
+        counts[amount] = counts.get(amount, 0) + 1
+    max_count = max(counts.values())
+    return max(a for a, c in counts.items() if c == max_count)
 
 def _extract_amounts_keyword_nofmt(text):
     """Last-resort: finds 4-5 digit amounts on total-keyword lines where OCR dropped the comma."""
@@ -214,15 +235,17 @@ def find_amount(text, receipt_type):
         logger.debug("Using '신한카드(실물)' specific logic.")
         amounts = []
         for line in lines:
+            if _NON_AMOUNT_LINE_RE.search(line):
+                continue
             match = re.search(r'(\d{1,3}(?:,\d{3})+)', line)
             if match:
                 amount = int(match.group(1).replace(',', ''))
                 if amount > 100:
                     amounts.append(amount)
         if amounts:
-            max_amount = max(amounts)
-            logger.debug(f"Found amount {max_amount} using '신한카드(실물)' logic.")
-            return str(max_amount)
+            picked = _pick_most_likely_amount(amounts)
+            logger.debug(f"Found amount {picked} using '신한카드(실물)' logic (candidates: {amounts}).")
+            return str(picked)
 
     elif receipt_type == '신한카드':
         logger.debug("Using '신한카드' specific logic.")
@@ -249,11 +272,11 @@ def find_amount(text, receipt_type):
             if amount:
                 won_amounts.append(int(amount))
         universal_amounts = _extract_amounts_universal(text)
-        all_amounts = list(set(won_amounts + universal_amounts))
+        all_amounts = won_amounts + universal_amounts
         if all_amounts:
-            max_amount = max(all_amounts)
-            logger.debug(f"Found amounts (원:{won_amounts}, universal:{universal_amounts}). Returning max: {max_amount}.")
-            return str(max_amount)
+            picked = _pick_most_likely_amount(all_amounts)
+            logger.debug(f"Found amounts (원:{won_amounts}, universal:{universal_amounts}). Selected: {picked}.")
+            return str(picked)
 
     logger.debug("Using general keyword logic.")
     keywords = ['승인금액', '결제금액', '결제 금액', '합계', '승인 금액']
@@ -269,11 +292,11 @@ def find_amount(text, receipt_type):
     logger.debug("Using universal amount fallback.")
     relaxed = _extract_amounts_universal(text)
     nofmt = _extract_amounts_keyword_nofmt(text)
-    all_amounts = list(set(relaxed + nofmt))
+    all_amounts = relaxed + nofmt
     if all_amounts:
-        max_amount = max(all_amounts)
-        logger.debug(f"Universal fallback (relaxed:{relaxed}, nofmt:{nofmt}) → max: {max_amount}")
-        return str(max_amount)
+        picked = _pick_most_likely_amount(all_amounts)
+        logger.debug(f"Universal fallback (relaxed:{relaxed}, nofmt:{nofmt}) → selected: {picked}")
+        return str(picked)
 
     logger.warning("Could not find amount in receipt.")
     return "Not found"
