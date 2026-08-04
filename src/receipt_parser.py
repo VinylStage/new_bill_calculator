@@ -68,23 +68,28 @@ def classify_receipt(text):
 
 def find_date(text):
     """Finds a date in YYYY-MM-DD format."""
-    match = re.search(r'(20\d{2})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})일?', text)
-    if match:
-        year, month, day = match.groups()
-        return f"{year}-{month.zfill(2)}-{day.zfill(2)}"
-    match = re.search(r'(\d{2})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})일?', text)
-    if match:
-        year, month, day = match.groups()
-        return f"20{year}-{month.zfill(2)}-{day.zfill(2)}"
+    for pattern, prefix in ((r'(20\d{2})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})일?', ''),
+                            (r'(\d{2})[.\-/년\s]+(\d{1,2})[.\-/월\s]+(\d{1,2})일?', '20')):
+        for match in re.finditer(pattern, text):
+            year, month, day = match.groups()
+            if 1 <= int(month) <= 12 and 1 <= int(day) <= 31:
+                return f"{prefix}{year}-{month.zfill(2)}-{day.zfill(2)}"
+            logger.debug(f"Rejected implausible date candidate: '{match.group(0).strip()}'")
+    logger.warning("Could not find a valid date in receipt.")
     return "Not found"
 
 def find_time(text):
     """Finds a time in HH:MM:SS format from the receipt text."""
     # Priority 1: Look for time near keywords like 승인시간, 결제시간, 거래시간
-    time_keywords = ['승인시간', '결제시간', '거래시간', '시간', '결제일시', '승인일시']
+    time_keywords = ['승인일시', '승인시간', '결제일시', '결제시간', '거래일시', '거래시간', '시간']
     for keyword in time_keywords:
-        # Find keyword and look for time pattern nearby
-        keyword_pattern = rf'{keyword}[:\s]*(\d{{1,2}})[:\s시](\d{{2}})[:\s분]?(\d{{2}})?초?'
+        # Tolerate OCR-inserted spaces inside the keyword ('승인 일시') and an
+        # intervening date ('[승인 일시] 2026-07-03 11:41:17').
+        spaced = r'\s*'.join(keyword)
+        keyword_pattern = (
+            rf'{spaced}[^\d\n]*(?:\d{{2,4}}[-./]\d{{1,2}}[-./]\d{{1,2}}\s*)?'
+            rf'(\d{{1,2}})[:\s시](\d{{2}})[:\s분]?(\d{{2}})?초?'
+        )
         match = re.search(keyword_pattern, text)
         if match:
             hour, minute, second = match.groups()
