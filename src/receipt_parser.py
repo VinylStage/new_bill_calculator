@@ -225,10 +225,52 @@ def _extract_amounts_keyword_nofmt(text):
                     amounts.append(amount)
     return amounts
 
+def _find_vat_pair_totals(text):
+    """Returns the charges implied by each 공급가/부가세 pair, in document order.
+
+    Korean VAT is exactly 10%, so a supply value paired with a tax value one tenth
+    its size implies a charge of their sum. A receipt split between several payers
+    prints the shared bill first and this card's own approval last, which makes a
+    second pair the tell-tale of a split payment."""
+    numbers = []
+    for match in re.finditer(r'(\d{1,3}(?:\s*[,，.]\s*\d{3})+)', text):
+        cleaned = re.sub(r'[\s,，.]', '', match.group(1))
+        if cleaned.isdigit() and 1000 <= int(cleaned) <= 9999900:
+            numbers.append(int(cleaned))
+
+    totals = []
+    for i, supply in enumerate(numbers):
+        # The tax always follows its supply value within a line or two.
+        for vat in numbers[i + 1:i + 4]:
+            if supply > vat and abs(supply / 10 - vat) <= 1.5:
+                total = supply + vat
+                if total not in totals:
+                    totals.append(total)
+    return totals
+
+def detect_split_payment(text):
+    """Returns (bill total, amount charged to this card) when the receipt looks
+    split between payers, otherwise None."""
+    totals = _find_vat_pair_totals(text)
+    if len(totals) > 1 and totals[-1] < totals[0]:
+        return totals[0], totals[-1]
+    return None
+
 def find_amount(text, receipt_type):
     """Finds the total amount based on the receipt type and refined logic."""
     logger.debug(f"Finding amount for receipt type: {receipt_type}")
     lines = text.split('\n')
+
+    # A bill split between payers shows the shared total and, further down, the
+    # amount this card was actually approved for — which is what gets claimed.
+    split = detect_split_payment(text)
+    if split:
+        bill_total, charged = split
+        logger.warning(
+            f"분할 결제로 보입니다. 영수증 전체 금액 {bill_total:,}원 중 "
+            f"이 카드 승인분 {charged:,}원을 사용합니다."
+        )
+        return str(charged)
 
     if receipt_type == '신한카드(앱)':
         logger.debug("Using '신한카드(앱)' specific logic.")

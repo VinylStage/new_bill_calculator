@@ -27,6 +27,13 @@ OCR_MIN_SHORT_SIDE = 1000
 OCR_MAX_UPSCALE = 3
 
 
+# --- 금액 수동 지정 ---
+# OCR이 금액을 잘못 읽는 영수증은 파일명을 키로 실제 금액을 직접 지정합니다.
+# 분할 결제(더치페이)에서 본인 카드 승인분이 자동으로 잡히지 않을 때 사용하세요.
+# 예: AMOUNT_OVERRIDES = {"paper-8.jpg": 11000}
+AMOUNT_OVERRIDES = {}
+
+
 # --- 로깅 설정 ---
 # 로그 파일이 저장될 디렉토리
 LOG_DIR = "logs"

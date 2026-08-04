@@ -11,7 +11,8 @@ from src.receipt_parser import (
     classify_receipt,
     find_date,
     find_time,
-    find_amount
+    find_amount,
+    detect_split_payment
 )
 from src.bill_calculator import solve_knapsack
 import config
@@ -89,6 +90,12 @@ def parse_args():
         default=config.BILL_LIMIT,
         metavar="AMOUNT",
         help=f"최대 한도 금액 (기본값: {config.BILL_LIMIT})"
+    )
+
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="금액이 불확실해도 확인 없이 진행합니다 (자동화용)"
     )
 
     # Dry run
@@ -215,6 +222,52 @@ def rename_receipt_files(df, input_dir, do_rename=True, do_backup=True, dry_run=
     return df
 
 
+def describe_uncertainty(text, amount):
+    """Returns a human-readable reason the amount deserves a look, or None if it
+    looks trustworthy."""
+    if not str(amount).isdigit():
+        return "금액을 찾지 못했습니다."
+
+    value = int(amount)
+    if value < 1000:
+        return f"금액이 비정상적으로 낮습니다: {value:,}원"
+    if value > 99999:
+        return f"금액이 비정상적으로 높습니다: {value:,}원"
+
+    split = detect_split_payment(text)
+    if split:
+        bill_total, charged = split
+        return (f"분할 결제로 보입니다. 영수증 전체는 {bill_total:,}원이고 "
+                f"이 카드 승인분은 {charged:,}원입니다.")
+    return None
+
+
+def review_amount(filename, amount, reason):
+    """Asks the user to confirm, correct, or skip a receipt whose amount is uncertain.
+
+    Returns the amount to use, or None to leave the receipt out entirely."""
+    print(f"\n  [확인 필요] {filename}")
+    print(f"  → {reason}")
+    while True:
+        try:
+            answer = input("  이 금액으로 진행할까요? [Y=진행 / n=이 영수증 제외 / 숫자=금액 직접 입력]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            # Not attached to a terminal (piped, cron): keep the detected value.
+            print()
+            logging.info(f"    입력을 받을 수 없어 감지된 금액({amount})을 그대로 사용합니다.")
+            return amount
+
+        if answer == "" or answer.lower() in ("y", "yes"):
+            return amount
+        if answer.lower() in ("n", "no"):
+            return None
+
+        digits = answer.replace(",", "").replace("원", "").strip()
+        if digits.isdigit():
+            return digits
+        print("  Y, n, 또는 금액(숫자)을 입력해주세요.")
+
+
 def validate_amounts(df):
     """Validates that all amounts are within a reasonable range."""
     min_amount = 1000
@@ -255,6 +308,7 @@ def process_all_receipts(args):
     do_rename = not args.no_rename and config.RENAME_FILES
     do_backup = not args.no_backup and config.BACKUP_ORIGINAL
     dry_run = args.dry_run
+    interactive = not args.non_interactive
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -286,6 +340,19 @@ def process_all_receipts(args):
         date = find_date(text)
         time = find_time(text)
         amount = find_amount(text, receipt_type)
+
+        override = config.AMOUNT_OVERRIDES.get(filename)
+        if override is not None:
+            logging.info(f"    수동 지정 금액 적용: {amount} → {override:,}원")
+            amount = str(override)
+        elif interactive:
+            reason = describe_uncertainty(text, amount)
+            if reason:
+                amount = review_amount(filename, amount, reason)
+                if amount is None:
+                    logging.info(f"    사용자 요청으로 {filename} 을(를) 제외했습니다.")
+                    continue
+
         all_receipt_data.append([filename, date, time, amount, receipt_type])
         logging.debug(f"    날짜: {date}, 시간: {time}, 금액: {amount}, 유형: {receipt_type}")
 
