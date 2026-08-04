@@ -16,6 +16,17 @@ FINAL_CSV_NAME = "receipt_summary.csv"
 BILL_LIMIT = 100000
 
 
+# --- OCR 설정 ---
+# 고정확도 tessdata 모델 디렉토리 (None이면 시스템 기본 모델 사용)
+TESSDATA_DIR = "./tessdata"
+
+# 이미지의 짧은 변이 이 값보다 작으면 OCR 전에 확대합니다
+OCR_MIN_SHORT_SIDE = 1000
+
+# 확대 배율 상한
+OCR_MAX_UPSCALE = 3
+
+
 # --- 로깅 설정 ---
 # 로그 파일이 저장될 디렉토리
 LOG_DIR = "logs"

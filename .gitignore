@@ -276,3 +276,6 @@ receipt_images/*.JPG
 receipt_images/*.jpg
 receipt_images/*.JEPG
 receipt_images_backup/
+
+# Downloaded Tesseract models (see README for the download command)
+tessdata/

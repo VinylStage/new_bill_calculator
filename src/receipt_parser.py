@@ -3,20 +3,29 @@ import subprocess
 import re
 import os
 import logging
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageFilter
+
+import config
 
 logger = logging.getLogger(__name__)
 
 def _preprocess_image(image_path):
     """Preprocesses the image for better OCR results."""
     try:
-        img = Image.open(image_path)
-        # Convert to grayscale
-        img = img.convert('L')
-        # Increase contrast
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.0)
-        
+        img = Image.open(image_path).convert('L')
+
+        # Phone photos of receipts are often downscaled to ~1024px, leaving the
+        # small print below Tesseract's minimum legible x-height.
+        short_side = min(img.size)
+        if short_side < config.OCR_MIN_SHORT_SIDE:
+            scale = min(config.OCR_MAX_UPSCALE, config.OCR_MIN_SHORT_SIDE / short_side)
+            img = img.resize((round(img.width * scale), round(img.height * scale)), Image.LANCZOS)
+            img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+            img = ImageEnhance.Contrast(img).enhance(1.5)
+            logger.debug(f"Upscaled {os.path.basename(image_path)} by {scale:.2f}x to {img.size}")
+        else:
+            img = ImageEnhance.Contrast(img).enhance(2.0)
+
         processed_image_path = os.path.splitext(image_path)[0] + "_processed.png"
         img.save(processed_image_path)
         return processed_image_path
@@ -30,10 +39,13 @@ def extract_text_from_image(image_path):
     if not processed_image_path:
         return ""
 
+    command = ['tesseract', processed_image_path, 'stdout', '-l', 'kor+eng', '--psm', '6']
+    if config.TESSDATA_DIR and os.path.isdir(config.TESSDATA_DIR):
+        command += ['--tessdata-dir', config.TESSDATA_DIR]
+
     try:
         result = subprocess.run(
-            ['tesseract', processed_image_path, 'stdout', '-l', 'kor+eng', '--psm', '6'],
-            capture_output=True, text=True, check=True, encoding='utf-8'
+            command, capture_output=True, text=True, check=True, encoding='utf-8'
         ).stdout
         logger.debug(f"Successfully extracted text from {image_path}:\n---START TEXT---\n{result}\n---END TEXT---")
         return result
