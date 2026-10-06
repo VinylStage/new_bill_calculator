@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import sys
 import logging
 import argparse
@@ -12,7 +13,8 @@ from src.receipt_parser import (
     find_date,
     find_time,
     find_amount,
-    detect_split_payment
+    detect_split_payment,
+    find_vat_implied_total
 )
 from src.bill_calculator import solve_knapsack
 import config
@@ -239,6 +241,13 @@ def describe_uncertainty(text, amount):
         bill_total, charged = split
         return (f"분할 결제로 보입니다. 영수증 전체는 {bill_total:,}원이고 "
                 f"이 카드 승인분은 {charged:,}원입니다.")
+
+    # A small gap is OCR misreading a supply digit; a real gap usually means
+    # tax-free items or a misread total.
+    implied = find_vat_implied_total(text)
+    if implied and abs(implied - value) > max(100, value * 0.01):
+        return (f"영수증 금액({value:,}원)이 공급가+부가세 합계({implied:,}원)와 "
+                f"다릅니다. 면세 품목이 있거나 금액을 잘못 읽었을 수 있습니다.")
     return None
 
 
@@ -266,6 +275,86 @@ def review_amount(filename, amount, reason):
         if digits.isdigit():
             return digits
         print("  Y, n, 또는 금액(숫자)을 입력해주세요.")
+
+
+def review_date(filename, amount, reason, current="Not found"):
+    """Asks the user to supply or confirm a receipt date.
+
+    Returns a YYYY-MM-DD string (or "Not found" to go on without one), or None to
+    leave the receipt out entirely. Pressing enter keeps `current`."""
+    print(f"\n  [확인 필요] {filename} (금액: {amount}원)")
+    print(f"  → {reason}")
+    keep = "날짜 없이 진행" if current == "Not found" else f"{current} 유지"
+    year = datetime.now().year
+    while True:
+        try:
+            answer = input(f"  날짜를 입력해주세요 [예: 2026-09-29 또는 9-29 / n=이 영수증 제외 / 엔터={keep}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            logging.info(f"    입력을 받을 수 없어 {keep}합니다.")
+            return current
+
+        if answer == "" or answer.lower() in ("y", "yes"):
+            return current
+        if answer.lower() in ("n", "no"):
+            return None
+
+        parts = [p for p in re.split(r'[-./\s월일]+', answer) if p]
+        if len(parts) == 2:
+            parts = [str(year)] + parts
+        if len(parts) == 3 and all(p.isdigit() for p in parts):
+            try:
+                return datetime(int(parts[0]), int(parts[1]), int(parts[2])).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        print("  2026-09-29, 9-29, 9월 29일 같은 형식으로 입력해주세요.")
+
+
+def find_date_outliers(receipts, max_gap_days=60):
+    """Returns indices of receipts dated far from the batch's median date.
+
+    A batch covers one claim period, so a date months away is almost always OCR
+    misreading a digit ('2026-09-28' → '2026-03-28')."""
+    dated = [(i, datetime.strptime(r[1], "%Y-%m-%d")) for i, r in enumerate(receipts)
+             if r[1] != "Not found"]
+    if len(dated) < 3:
+        return []
+    ordered = sorted(d for _, d in dated)
+    median = ordered[len(ordered) // 2]
+    return [i for i, d in dated if abs((d - median).days) > max_gap_days]
+
+
+def find_duplicate_payments(receipts):
+    """Returns (index, index of the earlier receipt) pairs that record the same
+    payment — e.g. the card app screen and the paper slip of one meal."""
+    seen, duplicates = {}, []
+    for i, (filename, date, time, amount, _) in enumerate(receipts):
+        if date == "Not found" or time == "00:00:00":
+            continue
+        key = (date, time[:5], str(amount))
+        if key in seen:
+            duplicates.append((i, seen[key]))
+        else:
+            seen[key] = i
+    return duplicates
+
+
+def review_duplicate(filename, original, date, time, amount):
+    """Asks whether to keep a receipt that repeats an earlier payment. Defaults to
+    dropping it so the same payment is never claimed twice."""
+    print(f"\n  [확인 필요] {filename}")
+    print(f"  → {original} 와(과) 같은 결제로 보입니다 ({date} {time[:5]}, {int(amount):,}원).")
+    while True:
+        try:
+            answer = input("  이 영수증도 포함할까요? [y=포함 / N=중복이므로 제외]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer == "" or answer.lower() in ("n", "no"):
+            return False
+        if answer.lower() in ("y", "yes"):
+            return True
+        print("  y 또는 n을 입력해주세요.")
 
 
 def validate_amounts(df):
@@ -353,8 +442,42 @@ def process_all_receipts(args):
                     logging.info(f"    사용자 요청으로 {filename} 을(를) 제외했습니다.")
                     continue
 
+        if date == "Not found" and interactive:
+            date = review_date(filename, amount, "날짜를 읽지 못했습니다.")
+            if date is None:
+                logging.info(f"    사용자 요청으로 {filename} 을(를) 제외했습니다.")
+                continue
+
         all_receipt_data.append([filename, date, time, amount, receipt_type])
         logging.debug(f"    날짜: {date}, 시간: {time}, 금액: {amount}, 유형: {receipt_type}")
+
+    # Batch-level checks need every receipt, so they run once all are read and
+    # before anything is renamed.
+    dropped = set()
+    for i in find_date_outliers(all_receipt_data):
+        filename, date, _, amount, _ = all_receipt_data[i]
+        reason = f"날짜({date})가 다른 영수증들과 두 달 이상 떨어져 있습니다. 숫자를 잘못 읽었을 수 있습니다."
+        if not interactive:
+            logging.warning(f"  [{filename}] {reason}")
+            continue
+        new_date = review_date(filename, amount, reason, current=date)
+        if new_date is None:
+            logging.info(f"    사용자 요청으로 {filename} 을(를) 제외했습니다.")
+            dropped.add(i)
+        else:
+            all_receipt_data[i][1] = new_date
+
+    for i, original in find_duplicate_payments(all_receipt_data):
+        if i in dropped or original in dropped:
+            continue
+        filename, date, time, amount, _ = all_receipt_data[i]
+        original_name = all_receipt_data[original][0]
+        if interactive and review_duplicate(filename, original_name, date, time, amount):
+            continue
+        logging.warning(f"  중복 결제로 보여 {filename} 을(를) 제외했습니다 ({original_name} 와(과) 동일).")
+        dropped.add(i)
+
+    all_receipt_data = [r for i, r in enumerate(all_receipt_data) if i not in dropped]
 
     df = pd.DataFrame(all_receipt_data, columns=['Filename', 'Date', 'Time', 'Amount', 'Type'])
     df['Amount'] = pd.to_numeric(df['Amount'], errors='coerce').fillna(0).astype(int)
@@ -411,7 +534,10 @@ def process_all_receipts(args):
     logging.info("--- 5. 최종 결과 생성 ---")
 
     # Convert date format to Korean style (1월 6일) for report
-    df['Date'] = pd.to_datetime(df['Date']).apply(lambda x: f"{x.month}월 {x.day}일")
+    # A receipt whose date was never recovered keeps "Not found"; show it plainly
+    # instead of letting the conversion abort the run after files were renamed.
+    dates = pd.to_datetime(df['Date'], format="%Y-%m-%d", errors='coerce')
+    df['Date'] = dates.apply(lambda x: f"{x.month}월 {x.day}일" if pd.notna(x) else "날짜 미확인")
 
     output_path = os.path.join(output_dir, config.FINAL_CSV_NAME)
     if not dry_run:
