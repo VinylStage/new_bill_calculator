@@ -137,7 +137,8 @@ def find_time(text):
             return time_str
 
     # Try HH:MM pattern
-    time_pattern = r'(\d{1,2}):(\d{2})(?!\d|:)'
+    # OCR sometimes reads the colon as a semicolon ('08;55').
+    time_pattern = r'(\d{1,2})[:;](\d{2})(?!\d|:)'
     match = re.search(time_pattern, text)
     if match:
         hour, minute = match.groups()
@@ -182,8 +183,11 @@ def extract_amount_from_line(line):
 
 # Lines carrying comma-formatted numbers that are never the payment total:
 # 해피콘/카카오페이 굿딜 preloads a 500,000원 balance, and merchant addresses
-# contain building numbers like '203,204호'.
-_NON_AMOUNT_LINE_RE = re.compile(r'잔\s*액|잔\s*여|포\s*인\s*트|적\s*립|주\s*소')
+# contain building numbers like '203,204호'. Card slips also print the
+# no-signature threshold ('50,000원 이하는 무서명').
+_NON_AMOUNT_LINE_RE = re.compile(
+    r'잔\s*액|잔\s*여|포\s*인\s*트|적\s*립|주\s*소|무\s*서\s*명|이\s*하\s*는'
+)
 
 def _extract_amounts_universal(text):
     """Finds all plausible receipt amounts using relaxed matching (handles OCR spaces/periods)."""
@@ -232,16 +236,29 @@ def _find_vat_pair_totals(text):
     its size implies a charge of their sum. A receipt split between several payers
     prints the shared bill first and this card's own approval last, which makes a
     second pair the tell-tale of a split payment."""
+    # Taxes under 1,000원 carry no comma ('864원', '부가세: 382'), so bare 3-4 digit
+    # numbers count too when they end the line or are followed by 원.
+    number_re = re.compile(
+        r'(\d{1,3}(?:\s*[,，.]\s*\d{3})+)|(?<![\d,，.])(\d{3,4})(?=\s*원|[\s|]*$)',
+        re.M,
+    )
+    # (value, comma_formatted). Only comma-formatted values may act as the supply
+    # side; a bare number could be a card-number tail like '-9986'.
     numbers = []
-    for match in re.finditer(r'(\d{1,3}(?:\s*[,，.]\s*\d{3})+)', text):
-        cleaned = re.sub(r'[\s,，.]', '', match.group(1))
-        if cleaned.isdigit() and 1000 <= int(cleaned) <= 9999900:
-            numbers.append(int(cleaned))
+    for match in number_re.finditer(text):
+        if match.group(1):
+            cleaned = re.sub(r'[\s,，.]', '', match.group(1))
+            if cleaned.isdigit() and 1000 <= int(cleaned) <= 9999900:
+                numbers.append((int(cleaned), True))
+        else:
+            numbers.append((int(match.group(2)), False))
 
     totals = []
-    for i, supply in enumerate(numbers):
+    for i, (supply, formatted) in enumerate(numbers):
+        if not formatted:
+            continue
         # The tax always follows its supply value within a line or two.
-        for vat in numbers[i + 1:i + 4]:
+        for vat, _ in numbers[i + 1:i + 4]:
             if supply > vat and abs(supply / 10 - vat) <= 1.5:
                 total = supply + vat
                 if total not in totals:
@@ -256,7 +273,42 @@ def detect_split_payment(text):
         return totals[0], totals[-1]
     return None
 
+def find_vat_implied_total(text):
+    """Returns the charge implied by the receipt's single 공급가/부가세 pair, or None
+    when there is no pair or several (a split bill)."""
+    totals = _find_vat_pair_totals(text)
+    return totals[0] if len(totals) == 1 else None
+
+def _is_digit_insertion(longer, shorter):
+    """True when `longer` is `shorter` with one extra digit — OCR's habit on large
+    bold amounts ('9,500' → '99,500', '9,900' → '90,900')."""
+    return len(longer) == len(shorter) + 1 and any(
+        longer[:i] + longer[i + 1:] == shorter for i in range(len(longer))
+    )
+
 def find_amount(text, receipt_type):
+    """Finds the charged amount, cross-checked against the receipt's VAT breakdown."""
+    amount = _find_amount_by_type(text, receipt_type)
+
+    implied = find_vat_implied_total(text)
+    if implied is None or not str(amount).isdigit() or int(amount) == implied:
+        return amount
+
+    picked = int(amount)
+    candidates = _extract_amounts_universal(text)
+    # Trust the supply+tax sum over the picked value when the picked value is a
+    # digit-inserted misread of it, or a one-off number while the sum itself was
+    # printed on the receipt.
+    if _is_digit_insertion(str(picked), str(implied)) or (
+        implied in candidates and candidates.count(picked) <= 1
+    ):
+        logger.warning(
+            f"금액 보정: {picked:,}원 → {implied:,}원 (공급가+부가세 합계와 일치하도록)"
+        )
+        return str(implied)
+    return amount
+
+def _find_amount_by_type(text, receipt_type):
     """Finds the total amount based on the receipt type and refined logic."""
     logger.debug(f"Finding amount for receipt type: {receipt_type}")
     lines = text.split('\n')
